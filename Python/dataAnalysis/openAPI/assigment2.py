@@ -5,7 +5,7 @@ import json
 
 url = "http://openapi.seoul.go.kr:8088/sample/xml/SearchFAQClassListService/1/5/%20/%20/"
 params = {
-    "myKey" : "724d474575676c6736366745714841",
+    "myKey" : "인증완료",
 }
 
 response = requests.get(url, params=params)

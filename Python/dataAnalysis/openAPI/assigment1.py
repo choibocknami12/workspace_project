@@ -4,9 +4,6 @@ import json
 # from urllib.parse import urlencode
 
 url = "http://openapi.seoul.go.kr:8088/724d474575676c6736366745714841/json/energyUseDataSummaryInfo/1/5/2015/01"
-# params = {
-#     "myKey" : "724d474575676c6736366745714841",
-# }
 
 response = requests.get(url)
 # print(response.text)

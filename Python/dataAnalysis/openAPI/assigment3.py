@@ -3,9 +3,6 @@ import json
 
 # 파라미터에 월별 변경하기
 basic_url = "http://openapi.seoul.go.kr:8088/724d474575676c6736366745714841/json/energyUseDataSummaryInfo/1/5/{}/{}"
-# params = {
-#     "myKey" : "724d474575676c6736366745714841",
-# }
 
 # 년도 설정 : range() > 끝 숫자는 범위에 포함되지 않음. 그래서 2015~2025로 설정.
 years = range(2015, 2025)
