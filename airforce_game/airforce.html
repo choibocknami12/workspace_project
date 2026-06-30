@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>공군 ROGUELIKE</title>
+<style>
+  :root { --yellow:#ffd400; --red:#e23b3b; --green:#3bbf4a; }
+  * { box-sizing:border-box; }
+  html,body {
+    margin:0; height:100%; background:#000; overflow:hidden;
+    font-family:"DungGeunMo","Galmuri11",ui-monospace,Menlo,Consolas,monospace;
+    -webkit-user-select:none; user-select:none;
+  }
+  #stage {
+    position:relative; height:100vh; display:flex; align-items:center; justify-content:center;
+  }
+  /* 캔버스: 논리 해상도 420x640의 픽셀을 보존하며 화면에 맞춰 키움 */
+  #game {
+    background:#050505; image-rendering:pixelated;
+    height:96vh; max-height:96vh; width:auto;
+    border:0.5px solid #222;
+  }
+  /* 화면 위에 겹치는 UI 오버레이(타이틀/레벨업/게임오버) */
+  .overlay {
+    position:absolute; inset:0; display:none;
+    flex-direction:column; align-items:center; justify-content:center;
+    color:#fff; text-align:center; padding:24px;
+    background:rgba(5,5,5,0.86);
+  }
+  .overlay.show { display:flex; }
+  .title-big { font-size:34px; letter-spacing:10px; font-weight:bold; }
+  .title-sub { font-size:11px; letter-spacing:5px; color:#8a8a8a; margin-top:6px; }
+  .label { font-size:11px; color:#8c8c8c; letter-spacing:2px; margin-bottom:7px; }
+  .panel { width:100%; max-width:300px; margin-top:26px; }
+  input#squad {
+    width:100%; height:38px; background:transparent; border:2px solid #3a3a3a;
+    color:#fff; font-family:inherit; font-size:15px; text-align:center; outline:none;
+  }
+  input#squad:focus { border-color:var(--yellow); }
+  .planes { display:flex; gap:10px; justify-content:space-between; margin-top:4px; }
+  .plane {
+    flex:1; height:96px; border:2px solid #3a3a3a; background:transparent; cursor:pointer;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:7px;
+    color:#8c8c8c; font-size:11px;
+  }
+  .plane canvas { image-rendering:pixelated; }
+  .plane.sel { border-color:var(--yellow); color:var(--yellow); }
+  .plane .stat { font-size:9px; color:#666; }
+  .btn {
+    margin-top:24px; width:100%; max-width:300px; height:42px; background:transparent;
+    border:2px solid #fff; color:#fff; font-family:inherit; font-size:15px; letter-spacing:6px; cursor:pointer;
+  }
+  .btn:hover { background:#fff; color:#000; }
+  .btn.alt { border-color:#666; color:#bbb; letter-spacing:3px; margin-top:12px; }
+  .btn.alt:hover { background:#666; color:#000; }
+  .ups { display:flex; flex-direction:column; gap:12px; width:100%; max-width:320px; margin-top:22px; }
+  .up {
+    border:2px solid #3a3a3a; background:transparent; color:#fff; cursor:pointer;
+    padding:12px 14px; text-align:left; font-family:inherit;
+  }
+  .up:hover { border-color:var(--yellow); }
+  .up .un { font-size:14px; }
+  .up .ud { font-size:11px; color:#9a9a9a; margin-top:4px; }
+  .go-score { font-size:30px; color:var(--yellow); margin-top:10px; }
+  .go-line { font-size:12px; color:#aaa; margin-top:8px; }
+  .hint { font-size:10px; color:#666; margin-top:18px; letter-spacing:1px; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="game" width="420" height="640"></canvas>
+
+  <!-- 타이틀 화면 -->
+  <div id="titleScreen" class="overlay show">
+    <div class="title-big">공 군</div>
+    <div class="title-sub">ROGUELIKE</div>
+    <div class="panel">
+      <div class="label">부대 이름</div>
+      <input id="squad" maxlength="12" placeholder="제1전투비행단" autocomplete="off">
+    </div>
+    <div class="panel">
+      <div class="label">기체 선택</div>
+      <div class="planes" id="planePick"></div>
+    </div>
+    <button class="btn" id="startBtn">출 격</button>
+    <div class="hint">방향키 이동 · 총알 자동발사</div>
+  </div>
+
+  <!-- 레벨업 화면 -->
+  <div id="levelupScreen" class="overlay">
+    <div class="title-sub" style="letter-spacing:6px;color:var(--yellow)">LEVEL UP</div>
+    <div class="label" style="margin-top:10px">강화를 하나 선택하세요</div>
+    <div class="ups" id="upList"></div>
+  </div>
+
+  <!-- 게임오버 화면 -->
+  <div id="gameoverScreen" class="overlay">
+    <div class="title-sub" style="letter-spacing:6px;color:var(--red)">GAME OVER</div>
+    <div class="go-score" id="goScore">0</div>
+    <div class="go-line" id="goLine"></div>
+    <button class="btn" id="retryBtn">다시 출격</button>
+    <button class="btn alt" id="homeBtn">처음으로</button>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* =========================================================
+   공군 ROGUELIKE  —  JS + Canvas 단일 파일
+   구조: 상태머신(TITLE/PLAYING/LEVELUP/GAMEOVER)
+        + 게임루프(update→render)
+        + 배열 엔티티(총알/적/아이템/별/파티클)
+   ========================================================= */
+
+const cv = document.getElementById('game');
+const ctx = cv.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+const VW = cv.width, VH = cv.height;   // 논리 해상도
+
+/* ---------- 1) 도트 스프라이트 ----------
+   '.'은 빈칸, 그 외 글자는 채워질 픽셀.
+   패턴만 바꾸면 새 기체/적 기를 쉽게 추가할 수 있다. */
+const PATTERNS = {
+  ship:       ["....X....","...XXX...","...XXX...","..XXXXX..","XXXXXXXXX","XXXXXXXXX",".XX.X.XX.","..X...X.."],
+  shipNarrow: ["..X..",".XXX.",".XXX.","XXXXX","XXXXX",".X.X."],
+  shipWide:   [".....X.....","....XXX....","...XXXXX...",".XXXXXXXXX.","XXXXXXXXXXX","XXXXXXXXXXX","..XXX.XXX..","..X..X..X.."],
+  enemy:      [".X.....X.",".XX...XX.",".XXXXXXX.","XXXXXXXXX",".XXXXXXX.","..XXXXX..","...XXX...","....X...."],
+  scout:      ["..X..",".XXX.","XXXXX",".XXX.","..X.."],
+  heart:      [".XX.XX.","XXXXXXX","XXXXXXX",".XXXXX.","..XXX..","...X..."],
+};
+
+// 패턴을 오프스크린 캔버스로 미리 그려둠 (매 프레임 빠르게 출력)
+function bake(pattern, color, px){
+  const w = pattern[0].length, h = pattern.length;
+  const c = document.createElement('canvas');
+  c.width = w*px; c.height = h*px;
+  const g = c.getContext('2d');
+  g.fillStyle = color;
+  for(let y=0;y<h;y++) for(let x=0;x<pattern[y].length;x++)
+    if(pattern[y][x] !== '.') g.fillRect(x*px, y*px, px, px);
+  return c;
+}
+
+/* ---------- 2) 기체 종류별 능력치 ---------- */
+const PLANES = {
+  speed:   { key:'speed',   name:'속도형', sub:'빠름·약함', pat:'shipNarrow', px:5, speed:4.6, maxHp:2, fireInterval:9,  scale:5 },
+  balance: { key:'balance', name:'균형',   sub:'표준',      pat:'ship',       px:5, speed:3.6, maxHp:3, fireInterval:11, scale:5 },
+  tank:    { key:'tank',    name:'중장갑', sub:'느림·튼튼', pat:'shipWide',   px:4, speed:2.8, maxHp:5, fireInterval:13, scale:4 },
+};
+
+/* ---------- 3) 입력(눌린 키 상태 기억) ---------- */
+const keys = {};
+addEventListener('keydown', e => {
+  keys[e.key] = true;
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
+});
+addEventListener('keyup', e => { keys[e.key] = false; });
+
+/* ---------- 4) 게임 상태 ---------- */
+let state = 'TITLE';
+let started = false;
+let chosenPlane = 'balance';
+let squadName = '';
+
+let player, bullets, enemies, eBullets, items, particles, wingmen, stars;
+let frame, spawnTimer, score, level, xp, xpNext;
+
+// 별밭은 타이틀에서도 흐르도록 항상 유지
+function initStars(){
+  stars = [];
+  for(let i=0;i<70;i++) stars.push({
+    x: Math.random()*VW, y: Math.random()*VH,
+    s: 0.6 + Math.random()*1.6, sz: Math.random()<0.85?1:2
+  });
+}
+initStars();
+
+/* ---------- 게임 시작/초기화 ---------- */
+function startGame(){
+  const P = PLANES[chosenPlane];
+  player = {
+    x: VW/2, y: VH-90,
+    scale: P.scale, pat: P.pat,
+    spr: bake(PATTERNS[P.pat], '#ffffff', P.scale),
+    w: PATTERNS[P.pat][0].length*P.scale,
+    h: PATTERNS[P.pat].length*P.scale,
+    speed: P.speed, hp: P.maxHp, maxHp: P.maxHp,
+    fireInterval: P.fireInterval, fireTimer: 0,
+    weaponLevel: 1, bulletDmg: 1, bulletR: 3, invuln: 0
+  };
+  bullets = []; enemies = []; eBullets = []; items = []; particles = []; wingmen = [];
+  frame = 0; spawnTimer = 0; score = 0; level = 1; xp = 0; xpNext = 6;
+  started = true; state = 'PLAYING';
+  hide('titleScreen'); hide('levelupScreen'); hide('gameoverScreen');
+}
+
+/* ---------- 5) 발사 패턴 ---------- */
+// weaponLevel 만큼 부챗꼴로 총알이 늘어난다
+function playerShots(){
+  const n = player.weaponLevel, out = [], spd = 8.4, step = 0.11;
+  for(let i=0;i<n;i++){
+    const off = i - (n-1)/2;
+    const a = -Math.PI/2 + off*step;
+    out.push({ dx: off*5, vx: Math.cos(a)*spd, vy: Math.sin(a)*spd });
+  }
+  return out;
+}
+function firePlayer(){
+  for(const s of playerShots())
+    bullets.push({ x: player.x+s.dx, y: player.y-player.h/2, vx:s.vx, vy:s.vy, r:player.bulletR, dmg:player.bulletDmg });
+  // 윙맨기는 직선 1발씩
+  for(const wm of wingmen)
+    bullets.push({ x: player.x+wm.off, y: player.y-6, vx:0, vy:-8.4, r:player.bulletR, dmg:player.bulletDmg });
+}
+
+function addWingman(){
+  if(wingmen.length >= 4) return;
+  const i = wingmen.length;
+  const off = (i%2===0 ? 1 : -1) * (26 + Math.floor(i/2)*16);
+  wingmen.push({ off });
+}
+
+/* ---------- 6) 적 생성 ---------- */
+function spawnEnemy(){
+  const fast = Math.random() < 0.32;
+  if(fast){
+    const px = 4, spr = bake(PATTERNS.scout, '#e23b3b', px);
+    enemies.push({
+      type:'scout', x: 30+Math.random()*(VW-60), y:-30,
+      vx:(Math.random()-0.5)*1.6, vy: 2.4 + level*0.06,
+      spr, w:5*px, h:5*px, r:11, hp:1, maxHp:1, fireTimer:-1, score:15
+    });
+  } else {
+    const px = 4, spr = bake(PATTERNS.enemy, '#e23b3b', px);
+    const hp = 2 + Math.floor(level/3);
+    enemies.push({
+      type:'enemy', x: 30+Math.random()*(VW-60), y:-40,
+      vx:0, vy: 1.2 + level*0.04,
+      spr, w:9*px, h:8*px, r:17, hp, maxHp:hp,
+      fireTimer: 40 + Math.random()*60, score:30
+    });
+  }
+}
+
+/* ---------- 7) 아이템 드롭 ---------- */
+function maybeDrop(x, y){
+  if(Math.random() > 0.20) return;            // 20% 확률로 드롭
+  const roll = Math.random();
+  let kind = 'yellow';
+  if(roll < 0.22) kind = 'heart';             // 빨강(체력)  22%
+  else if(roll < 0.50) kind = 'green';        // 초록(크기)  28%
+  else if(roll < 0.82) kind = 'yellow';       // 노랑(총알)  32%
+  else kind = 'white';                         // 흰색(윙맨)  18%
+  items.push({ x, y, vy:1.3, kind, t:0 });
+}
+function applyItem(kind){
+  if(kind==='heart')  player.hp = Math.min(player.maxHp, player.hp+1);
+  if(kind==='green'){ player.bulletDmg += 1; player.bulletR = Math.min(7, player.bulletR+1); } // 총알 크기·위력
+  if(kind==='yellow') player.weaponLevel = Math.min(7, player.weaponLevel+1);
+  if(kind==='white')  addWingman();
+}
+const ITEM_COLOR = { heart:'#e23b3b', green:'#3bbf4a', yellow:'#ffd400', white:'#ffffff' };
+
+/* ---------- 8) 레벨업 강화 풀 ---------- */
+const UPGRADES = [
+  { name:'화력 증가', desc:'총알이 한 갈래 늘어난다',     apply:()=>player.weaponLevel=Math.min(7,player.weaponLevel+1) },
+  { name:'연사 강화', desc:'발사 간격이 짧아진다',         apply:()=>player.fireInterval=Math.max(3,player.fireInterval-2) },
+  { name:'관통 강화', desc:'총알 위력 +1',                 apply:()=>player.bulletDmg+=1 },
+  { name:'기동력 향상', desc:'이동 속도가 빨라진다',       apply:()=>player.speed+=0.6 },
+  { name:'장갑 보강', desc:'최대 체력 +1, 1 회복',         apply:()=>{ player.maxHp+=1; player.hp=Math.min(player.maxHp,player.hp+1); } },
+  { name:'윙맨 합류', desc:'추가 기체 +1 (자동 발사)',     apply:()=>addWingman() },
+];
+function gainXp(v){
+  xp += v;
+  if(xp >= xpNext){
+    xp -= xpNext; level++; xpNext = Math.round(xpNext*1.35)+2;
+    openLevelUp();
+  }
+}
+function openLevelUp(){
+  state = 'LEVELUP';
+  const pool = UPGRADES.slice();
+  for(let i=pool.length-1;i>0;i--){ const j=(Math.random()*(i+1))|0; [pool[i],pool[j]]=[pool[j],pool[i]]; }
+  const pick = pool.slice(0,3);
+  const list = document.getElementById('upList');
+  list.innerHTML = '';
+  pick.forEach(u=>{
+    const b = document.createElement('button');
+    b.className = 'up';
+    b.innerHTML = '<div class="un">'+u.name+'</div><div class="ud">'+u.desc+'</div>';
+    b.onclick = ()=>{ u.apply(); state='PLAYING'; hide('levelupScreen'); };
+    list.appendChild(b);
+  });
+  show('levelupScreen');
+}
+
+/* ---------- 9) 파티클(폭발) ---------- */
+function boom(x,y,color,n){
+  for(let i=0;i<n;i++){
+    const a = Math.random()*Math.PI*2, sp = 1+Math.random()*3;
+    particles.push({ x, y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp, life:18+Math.random()*10, color });
+  }
+}
+
+/* ---------- 10) 업데이트 ---------- */
+function updateStars(){
+  for(const s of stars){ s.y += s.s; if(s.y>VH){ s.y=0; s.x=Math.random()*VW; } }
+}
+function updateWorld(){
+  frame++;
+  // 플레이어 이동
+  const p = player;
+  if(keys.ArrowLeft||keys.a)  p.x -= p.speed;
+  if(keys.ArrowRight||keys.d) p.x += p.speed;
+  if(keys.ArrowUp||keys.w)    p.y -= p.speed;
+  if(keys.ArrowDown||keys.s)  p.y += p.speed;
+  p.x = Math.max(p.w/2, Math.min(VW-p.w/2, p.x));
+  p.y = Math.max(p.h/2, Math.min(VH-p.h/2, p.y));
+  if(p.invuln>0) p.invuln--;
+  // 자동 발사
+  if(--p.fireTimer<=0){ firePlayer(); p.fireTimer = p.fireInterval; }
+
+  // 적 스폰 (시간/레벨 따라 점점 빨라짐)
+  if(--spawnTimer<=0){
+    spawnEnemy();
+    spawnTimer = Math.max(16, 64 - level*3 - Math.floor(frame/600)*4);
+  }
+
+  // 내 총알
+  for(const b of bullets){ b.x+=b.vx; b.y+=b.vy; }
+  bullets = bullets.filter(b=> b.y>-20 && b.y<VH+20 && b.x>-20 && b.x<VW+20);
+
+  // 적 + 적 총알
+  for(const e of enemies){
+    e.x+=e.vx; e.y+=e.vy;
+    if(e.x<20||e.x>VW-20) e.vx*=-1;
+    if(e.fireTimer>0 && --e.fireTimer<=0){
+      eBullets.push({ x:e.x, y:e.y+e.h/2, vx:0, vy:3.0, r:4 });
+      e.fireTimer = 70 + Math.random()*70;
+    }
+  }
+  for(const b of eBullets){ b.x+=b.vx; b.y+=b.vy; }
+  eBullets = eBullets.filter(b=> b.y<VH+20);
+
+  // 아이템 낙하
+  for(const it of items){ it.y+=it.vy; it.t++; }
+  items = items.filter(it=> it.y<VH+20);
+
+  // 파티클
+  for(const pt of particles){ pt.x+=pt.vx; pt.y+=pt.vy; pt.vx*=0.92; pt.vy*=0.92; pt.life--; }
+  particles = particles.filter(pt=> pt.life>0);
+
+  /* ---- 충돌 판정 (원-원 거리) ---- */
+  // 내 총알 vs 적
+  for(const e of enemies){
+    for(const b of bullets){
+      if(b.dead) continue;
+      const dx=b.x-e.x, dy=b.y-e.y;
+      if(dx*dx+dy*dy < (e.r+b.r)*(e.r+b.r)){
+        e.hp -= b.dmg; b.dead = true;
+        boom(b.x,b.y,'#ffd400',4);
+        if(e.hp<=0){
+          e.dead = true; score += e.score; gainXp(e.type==='scout'?1:2);
+          boom(e.x,e.y,'#e23b3b',16); maybeDrop(e.x,e.y);
+        }
+      }
+    }
+  }
+  bullets = bullets.filter(b=>!b.dead);
+  enemies = enemies.filter(e=>!e.dead && e.y<VH+40);
+
+  // 적/적 총알 vs 나
+  if(p.invuln<=0){
+    const hitR = Math.min(p.w,p.h)*0.32;
+    for(const e of enemies){
+      const dx=e.x-p.x, dy=e.y-p.y;
+      if(dx*dx+dy*dy < (e.r+hitR)*(e.r+hitR)){ damagePlayer(); e.dead=true; boom(e.x,e.y,'#e23b3b',14); break; }
+    }
+    enemies = enemies.filter(e=>!e.dead);
+    for(const b of eBullets){
+      const dx=b.x-p.x, dy=b.y-p.y;
+      if(dx*dx+dy*dy < (b.r+hitR)*(b.r+hitR)){ b.dead=true; damagePlayer(); break; }
+    }
+    eBullets = eBullets.filter(b=>!b.dead);
+  }
+
+  // 아이템 vs 나
+  for(const it of items){
+    const dx=it.x-p.x, dy=it.y-p.y;
+    if(dx*dx+dy*dy < (24+p.w/2)*(24+p.w/2)){ applyItem(it.kind); it.dead=true; boom(it.x,it.y,ITEM_COLOR[it.kind],8); }
+  }
+  items = items.filter(it=>!it.dead);
+}
+
+function damagePlayer(){
+  player.hp -= 1; player.invuln = 70;
+  boom(player.x,player.y,'#ffffff',12);
+  if(player.hp<=0) gameOver();
+}
+
+function gameOver(){
+  state = 'GAMEOVER';
+  document.getElementById('goScore').textContent = score.toLocaleString();
+  document.getElementById('goLine').textContent = (squadName||'무명부대')+' · Lv.'+level+' 도달';
+  show('gameoverScreen');
+}
+
+/* ---------- 11) 렌더 ---------- */
+function render(){
+  ctx.fillStyle = '#050505'; ctx.fillRect(0,0,VW,VH);
+  // 별
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  for(const s of stars) ctx.fillRect(s.x|0, s.y|0, s.sz, s.sz);
+
+  if(!started) return;
+
+  // 적 총알
+  ctx.fillStyle = '#ff8a3b';
+  for(const b of eBullets) ctx.fillRect(b.x-2, b.y-4, 4, 8);
+  // 내 총알
+  ctx.fillStyle = '#ffd400';
+  for(const b of bullets) ctx.fillRect(b.x-b.r, b.y-5, b.r*2, 10);
+  // 적
+  for(const e of enemies) ctx.drawImage(e.spr, e.x-e.w/2, e.y-e.h/2);
+  // 윙맨기
+  for(const wm of wingmen){
+    ctx.save(); ctx.globalAlpha=0.95;
+    ctx.drawImage(player.spr, player.x+wm.off-player.w*0.35, player.y+6, player.w*0.7, player.h*0.7);
+    ctx.restore();
+  }
+  // 아이템 (총알·적 위에 그려서 가려지지 않게 + 테두리로 강조)
+  for(const it of items){
+    ctx.save(); ctx.translate(it.x, it.y);
+    const pulse = 1 + (Math.sin(it.t*0.18)*0.12);   // 살짝 깜빡이며 떠오름 정도
+    if(it.kind==='heart'){
+      const spr = ITEM_HEART; ctx.drawImage(spr, -spr.width/2, -spr.height/2);
+    } else {
+      const s = 8*pulse;
+      ctx.fillStyle = '#050505'; ctx.fillRect(-s-2,-s-2,(s+2)*2,(s+2)*2);   // 어두운 외곽
+      ctx.fillStyle = '#ffffff'; ctx.fillRect(-s-1,-s-1,(s+1)*2,(s+1)*2);   // 흰 테두리
+      ctx.fillStyle = ITEM_COLOR[it.kind]; ctx.fillRect(-s,-s,s*2,s*2);     // 본체
+    }
+    ctx.restore();
+  }
+  // 플레이어 (피격 중 깜빡임)
+  if(!(player.invuln>0 && (frame>>2)&1))
+    ctx.drawImage(player.spr, player.x-player.w/2, player.y-player.h/2);
+  // 파티클
+  for(const pt of particles){ ctx.fillStyle=pt.color; ctx.globalAlpha=Math.max(0,pt.life/28); ctx.fillRect(pt.x-1,pt.y-1,3,3); }
+  ctx.globalAlpha=1;
+
+  drawHUD();
+}
+
+const ITEM_HEART = bake(PATTERNS.heart, '#e23b3b', 3);
+const HUD_HEART  = bake(PATTERNS.heart, '#e23b3b', 3);
+
+function drawHUD(){
+  // 체력 하트
+  for(let i=0;i<player.hp;i++) ctx.drawImage(HUD_HEART, 12+i*24, 12);
+  // 점수
+  ctx.fillStyle='#fff'; ctx.font='16px monospace'; ctx.textAlign='right';
+  ctx.fillText(String(score).padStart(5,'0'), VW-12, 26);
+  ctx.fillStyle='#ffd400'; ctx.font='11px monospace';
+  ctx.fillText('Lv.'+level, VW-12, 42);
+  // 경험치 바
+  ctx.fillStyle='#222'; ctx.fillRect(12, 40, 120, 5);
+  ctx.fillStyle='#ffd400'; ctx.fillRect(12, 40, 120*Math.min(1,xp/xpNext), 5);
+  ctx.textAlign='left';
+}
+
+/* ---------- 12) 메인 루프 ---------- */
+function loop(){
+  requestAnimationFrame(loop);
+  updateStars();
+  if(state==='PLAYING') updateWorld();
+  render();
+}
+loop();
+
+/* ---------- UI 연결 ---------- */
+function show(id){ document.getElementById(id).classList.add('show'); }
+function hide(id){ document.getElementById(id).classList.remove('show'); }
+
+// 타이틀: 기체 선택 버튼 생성
+const pickWrap = document.getElementById('planePick');
+Object.values(PLANES).forEach(P=>{
+  const b = document.createElement('button');
+  b.className = 'plane' + (P.key===chosenPlane?' sel':'');
+  b.dataset.key = P.key;
+  const c = bake(PATTERNS[P.pat], '#ffffff', 4);
+  const wrap = document.createElement('div');
+  wrap.style.height='40px'; wrap.style.display='flex'; wrap.style.alignItems='center';
+  wrap.appendChild(c);
+  b.appendChild(wrap);
+  const nm = document.createElement('div'); nm.textContent = P.name; b.appendChild(nm);
+  const st = document.createElement('div'); st.className='stat'; st.textContent = P.sub; b.appendChild(st);
+  b.onclick = ()=>{
+    chosenPlane = P.key;
+    document.querySelectorAll('.plane').forEach(x=>x.classList.remove('sel'));
+    b.classList.add('sel');
+  };
+  pickWrap.appendChild(b);
+});
+
+document.getElementById('startBtn').onclick = ()=>{
+  squadName = document.getElementById('squad').value.trim() || '제1전투비행단';
+  startGame();
+};
+document.getElementById('retryBtn').onclick = ()=> startGame();
+document.getElementById('homeBtn').onclick = ()=>{
+  state='TITLE'; started=false;
+  hide('gameoverScreen'); show('titleScreen');
+};
+// 엔터로 바로 출격
+document.getElementById('squad').addEventListener('keydown', e=>{
+  if(e.key==='Enter') document.getElementById('startBtn').click();
+});
+</script>
+</body>
+</html>
